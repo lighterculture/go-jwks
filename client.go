@@ -4,13 +4,12 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
-
-	jose "github.com/square/go-jose"
 )
 
 var httpClient *http.Client
@@ -25,6 +24,21 @@ func init() {
 			},
 		},
 	}
+}
+
+// JWKS is JSON Web Key Set
+type JSONWebKeySet struct {
+	Keys []JSONWebKey `json:"keys"`
+}
+
+// JSONWebKey is the data model for a JSON Web Key
+type JSONWebKey struct {
+	Kty string   `json:"kty"`
+	Kid string   `json:"kid"`
+	Use string   `json:"use"`
+	N   string   `json:"n"`
+	E   string   `json:"e"`
+	X5c []string `json:"x5c"`
 }
 
 // NewClient returns a Client which is used to fetch keys from a supplied endpoint.
@@ -67,6 +81,18 @@ func (c *Client) GetKey(kid string) (interface{}, error) {
 	return key, nil
 }
 
+func (c *Client) GetKeyAsPEM(kid string) ([]byte, error) {
+	key, err := c.GetKey(kid)
+	if err != nil {
+		return nil, err
+	}
+	pem, err := getPEM(key.(JSONWebKey))
+	if err != nil {
+		return nil, err
+	}
+	return pem, nil
+}
+
 func (c *Client) updateCache() error {
 	ks, err := fetchJWKs(c.endpoint)
 	if err != nil {
@@ -74,14 +100,22 @@ func (c *Client) updateCache() error {
 	}
 
 	for _, k := range ks {
-		c.keys.put(k.KeyID, k.Key)
+		c.keys.put(k.Kid, k)
 	}
 
 	return nil
 }
 
-func fetchJWKs(origin string) ([]jose.JsonWebKey, error) {
-	var ks jose.JsonWebKeySet
+func getPEM(jwk JSONWebKey) ([]byte, error) {
+	if len(jwk.X5c) < 1 {
+		return nil, errors.New("No certificate found")
+	}
+	cert := fmt.Sprintf("-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----", jwk.X5c[0])
+	return []byte(cert), nil
+}
+
+func fetchJWKs(origin string) ([]JSONWebKey, error) {
+	var ks JSONWebKeySet
 
 	resp, err := httpClient.Get(origin)
 	if err != nil {
